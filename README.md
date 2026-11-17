@@ -15,7 +15,11 @@ then, for each hour 2–24, takes the weighted median of the log-ratios
 (log viewers_h / viewers_1) across launches — weighted by how close each
 launch's hour-1 size is to this case's — and sets the spread from the
 weighted cross-launch dispersion, lightly smoothed across neighbouring
-hours. Quantiles are the hour-1 print times exp(centre + z · spread).
+hours. It also corrects the centre for launch size: the log-ratio's slope
+on log hour-1 viewers (near zero in the morning, about −0.9 by hour 20 —
+small launches surge harder into the evening), shrunk by 0.75 and capped
+at ±2 log units, applied only when the case's hour-1 print is below
+50,000. Quantiles are the hour-1 print times exp(centre + z · spread).
 
 ## How to run
 
@@ -29,6 +33,7 @@ On the four practice launches (Wolverine, Red Dead Redemption 2, God of War
 Ragnarök, Spider-Man 2), scored against their recorded release-day prints,
 this entry's mean pinball loss on the log scale is **0.229**, against the
 house persistence baseline's **0.387** (typical miss 48%, 90% coverage 0.95).
-The kernel bandwidth and spread scale were picked by leave-one-out scoring
-over the comparables' own release-day curves (loss 0.402 vs baseline 0.930
-there), not by tuning on the practice cases.
+The kernel bandwidth, spread scale and size-slope shrinkage were picked
+by leave-one-out scoring over the comparables' own release-day curves
+(loss 0.390 vs baseline 0.930 there — the size-slope correction moved it
+from 0.402), not by tuning on the practice cases.

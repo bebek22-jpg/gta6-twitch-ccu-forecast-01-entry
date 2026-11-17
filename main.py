@@ -26,6 +26,22 @@ with p1 the case's hour-1 print and z the standard normal quantiles at
 cross-launch dispersion itself: the median launch's shape sets the level
 and how much launches disagree sets the width.
 
+One systematic tilt the median misses: the log-ratio at an hour depends
+on the launch's hour-1 size.  Early in the day the dependence is nil,
+but by hour 20 the correlation between log hour-1 viewers and the
+log-ratio is about -0.94 (slope about -0.9): small launches surge much
+harder into the evening than big ones, because a small hour-1 print
+usually means the game only unlocked in some regions at midnight UTC.
+So each hour also fits the kernel-weighted least-squares slope of the
+log-ratios on log hour-1 viewers, smooths the slopes across hours, and
+adds 0.75 * slope * (log p1 - weighted mean log size) to the centre,
+capped at +/-2 log units — but only when the case's hour-1 print is
+below 50,000, where the tilt lives; above that the median shape is
+already right and the slope adds only noise.  The 0.75 shrinkage sits
+on the flat bottom of the leave-one-out curve (0.5..1.0 all within
+0.002), and the cap never binds on any library launch (largest fitted
+correction 1.17).
+
 If a comparable has no usable release-day curve it is skipped; an hour
 with no library data at all falls back to a widening persistence spread,
 and with no library at all the forecast is the persistence baseline.
@@ -33,10 +49,14 @@ The program is deterministic: fixed iteration order, no randomness, no
 clock, no network, standard library only.
 
 Measured on the four practice launches (leave-one-out over the
-comparables' own curves was used to pick the kernel bandwidth and the
-spread scale; the practice answers were fetched from the public source
-named in the kit for validation only): mean pinball loss 0.229 against
-the house persistence baseline's 0.387.
+comparables' own curves was used to pick the kernel bandwidth, the
+spread scale and the size-slope shrinkage; the practice answers were
+fetched from the public source named in the kit for validation only):
+mean pinball loss 0.229 against the house persistence baseline's 0.387.
+Leave-one-out over the comparables' curves: loss 0.390 vs baseline
+0.930 (was 0.402 before the size-slope correction; 11 of 37 launches
+improve and none worsens — small launches 0.632 -> 0.606, large
+launches unchanged 0.207).
 
 Usage:  mkdir -p out && MAKEFUN_INPUT_DIR=input MAKEFUN_OUTPUT_DIR=out python3 main.py
 The grader runs `python3 -P -s /bot/main.py` with /input and /output.
@@ -65,6 +85,22 @@ BANDWIDTH = 1.0
 # The cross-launch log-spread is scaled by this much; 0.9 was the best
 # of 0.6..1.0 in leave-one-out scoring over the comparables' curves.
 SPREAD_SCALE = 0.9
+# Size-slope correction (see forecast_case): how much of the fitted
+# log-size slope to apply to the centre. 0.75 sits on the flat bottom of
+# the leave-one-out curve (0.5..1.0 all score within 0.002 of each other),
+# so it is a shrinkage choice, not a tuned peak.
+SLOPE_SHRINK = 0.75
+# The correction applies only below this hour-1 print. The size tilt is
+# a small-launch phenomenon: above ~50k the library's median shape is
+# already right and the fitted slope adds only noise (leave-one-out: the
+# gate keeps the full small-launch gain while leaving large launches
+# exactly at the old model's score and flipping no launch vs baseline).
+SLOPE_MAX_P1 = 50_000
+# The slope correction is capped at this many log units either way, so an
+# hour-1 print far outside the library's size range can never move the
+# centre by more than this (non-binding on every library launch: the
+# largest fitted correction there is 1.17).
+SLOPE_CAP = 2.0
 # A comparable needs at least this many release-day hourly points to join.
 MIN_DAY_POINTS = 12
 # Persistence fallback spread (log units per sqrt hour), as the house uses.
@@ -231,22 +267,49 @@ def forecast_case(case, name):
         ]
         centre = {}
         spread = {}
+        slope = {}
+        ref_log_size = {}
         for h in hours:
             logs = []
             ws = []
+            xs = []
             for (_, curve, v1), w in zip(library, weights):
                 if h in curve:
                     logs.append(math.log(curve[h] / v1))
                     ws.append(w)
+                    xs.append(math.log(v1))
             if not logs:
                 centre[h] = 0.0
                 spread[h] = FALLBACK_SIGMA * math.sqrt(h - 1)
+                slope[h] = 0.0
+                ref_log_size[h] = log_p1
                 continue
             centre[h] = weighted_median(list(zip(logs, ws)))
             mean = sum(x * w for x, w in zip(logs, ws)) / sum(ws)
             spread[h] = weighted_std(logs, ws, mean) * SPREAD_SCALE
+            # Size slope: how the log-ratio at this hour moves with the
+            # launch's hour-1 size. Kernel-weighted least squares of the
+            # log-ratios on log hour-1 viewers. The slope is near zero in
+            # the morning and about -0.9 by hour 20: small launches surge
+            # much harder into the evening than big ones (a small hour-1
+            # print usually means the game only unlocked in some regions
+            # at midnight UTC). The weighted median alone misses that
+            # systematic tilt, so the centre gets a shrunk slope
+            # correction, smoothed across hours like centre and spread.
+            xbar = sum(x * w for x, w in zip(xs, ws)) / sum(ws)
+            ybar = sum(y * w for y, w in zip(logs, ws)) / sum(ws)
+            num = sum(w * (x - xbar) * (y - ybar)
+                      for x, y, w in zip(xs, logs, ws))
+            den = sum(w * (x - xbar) ** 2 for x, w in zip(xs, ws))
+            slope[h] = num / den if den > 0 else 0.0
+            ref_log_size[h] = xbar
         centre = smooth_across_hours(centre)
         spread = smooth_across_hours(spread)
+        slope = smooth_across_hours(slope)
+        if p1 < SLOPE_MAX_P1:
+            for h in hours:
+                correction = SLOPE_SHRINK * slope[h] * (log_p1 - ref_log_size[h])
+                centre[h] += max(-SLOPE_CAP, min(SLOPE_CAP, correction))
     else:
         centre = {h: 0.0 for h in hours}
         spread = {h: FALLBACK_SIGMA * math.sqrt(h - 1) for h in hours}
